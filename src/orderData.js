@@ -1,12 +1,12 @@
 const WORKER_URL  = 'https://web-order.clh-0556-clh.workers.dev'
-const API_KEY     = 'CLH-ORDER-2025-XK9'
+// No.4是正(2026-04-14): APIキー直書き削除 → Worker側でOrigin検証に変更
 
 /**
  * PASSコードから物件情報を取得
  */
 export async function fetchProperty(passCode) {
   const res = await fetch(
-    `${WORKER_URL}/property?pass=${encodeURIComponent(passCode)}&key=${API_KEY}`
+    `${WORKER_URL}/property?pass=${encodeURIComponent(passCode)}`
   )
   if (!res.ok) throw new Error('物件情報の取得に失敗しました')
   const data = await res.json()
