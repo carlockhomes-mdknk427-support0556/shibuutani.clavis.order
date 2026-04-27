@@ -472,10 +472,172 @@ function doPost(e) {
       return jsonResponse({ status: 'ok', result: result });
     }
 
+    // [v3.17 H-12 (2026-04-27 JST)] 物件マスタ検索 API（bukken-search アプリ用）
+    //   ORDER_API_KEY 必須 + Worker HMAC 検証 + 内部認証（business_token）
+    //   フリーワード検索 + フィールド別検索 + ページング
+    if (action === 'search_bukken') {
+      // ① ORDER_API_KEY 必須
+      var apiKey2 = getProp('ORDER_API_KEY');
+      if (!apiKey2 || !constantTimeEqual_(apiKey2, String(body.apiKey || ''))) {
+        auditLog('search_bukken_auth_fail', body.userEmail || '', 'reason=apikey_mismatch');
+        return jsonResponse({ status: 'error', message: '認証エラー' });
+      }
+      // ② Worker HMAC 検証（WORKER_HMAC_KEY 設定時のみ）
+      var hmacKey2 = getProp('WORKER_HMAC_KEY');
+      if (hmacKey2) {
+        var hv = verifyWorkerHmac_('search_bukken', String(body.userEmail || ''), body.ts || '', body.hmac || '');
+        if (!hv.ok) {
+          auditLog('search_bukken_auth_fail', body.userEmail || '', 'reason=hmac_' + hv.reason);
+          return jsonResponse({ status: 'error', message: '認証エラー' });
+        }
+      }
+      return jsonResponse(searchBukken_(body));
+    }
+
     return jsonResponse({ status: 'error', message: 'unknown_action' });
   } catch(err) {
     return jsonResponse({ status: 'error', message: 'サーバーエラー' });
   }
+}
+
+// ══════════════════════════════════════════════════
+// [v3.17 H-12] 物件マスタ検索（bukken-search アプリ用）
+//
+//  シート名: 「物件マスタ全件」（既存「物件マスター」=Clavis 注文用と区別）
+//  必須列: buken_id, 物件名, 仮称, 住所, 分類, 住戸数, 事業主, 管理会社, 竣工年,
+//          竣工月, 共用部1, 共用部2, 専有部1, 専有部2, 専有部3, 専有部opt1,
+//          専有部opt2, 専有部opt3, ハンドル, ハンドルカラー, シリンダー区分,
+//          錠ケース, 装置加算額有無, シリンダーカラー, 扉厚, ピッチ, 備芯,
+//          官民仕様, ロック数, キーチェンジ, 塩害地加算
+//
+//  入力: { q?: string, mansion?: string, year?: string, kyouyou?: string,
+//          senyuu?: string, bunrui?: string, limit?: number, offset?: number }
+//  出力: { status: 'ok', total: number, results: Object[] }
+//
+//  キャッシュ: 物件マスタは更新頻度低のため CacheService で 5 分キャッシュ
+// ══════════════════════════════════════════════════
+var BUKKEN_SHEET_NAME = '物件マスタ全件';
+var BUKKEN_CACHE_KEY  = 'bukken_master_cache_v1';
+var BUKKEN_CACHE_TTL  = 5 * 60; // 5 分
+
+function searchBukken_(body) {
+  try {
+    // 入力サニタイズ
+    var q       = String(body.q       || '').trim().toLowerCase();
+    var mansion = String(body.mansion || '').trim().toLowerCase();
+    var year    = String(body.year    || '').trim();
+    var kyouyou = String(body.kyouyou || '').trim();
+    var senyuu  = String(body.senyuu  || '').trim();
+    var bunrui  = String(body.bunrui  || '').trim();
+    var limit   = Math.min(Math.max(parseInt(body.limit  || '40', 10) || 40, 1), 100);
+    var offset  = Math.max(parseInt(body.offset || '0',   10) || 0, 0);
+
+    // フィルタ後の全件は最大 1,000 件まで（過大量レスポンス防止）
+    var MAX_FILTERED = 1000;
+
+    // 物件マスタを取得（キャッシュ優先）
+    var allRows = __loadBukkenMaster_();
+    if (!allRows || allRows.length === 0) {
+      return { status: 'error', message: '物件マスタが空または未投入です' };
+    }
+
+    // フィルタリング
+    var filtered = allRows.filter(function(p) {
+      // フリーワード q: 物件名 / 仮称 / 住所 / 事業主 / 管理会社 を対象
+      if (q) {
+        var hay = ((p['物件名'] || '') + '|' + (p['仮称'] || '') + '|' +
+                   (p['住所'] || '') + '|' + (p['事業主'] || '') + '|' +
+                   (p['管理会社'] || '')).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      if (mansion && String(p['物件名'] || '').toLowerCase().indexOf(mansion) < 0) return false;
+      if (year && String(p['竣工年'] || '').indexOf(year) < 0) return false;
+      if (kyouyou && String(p['共用部1'] || '') !== kyouyou && String(p['共用部2'] || '') !== kyouyou) return false;
+      if (senyuu && String(p['専有部1'] || '') !== senyuu && String(p['専有部2'] || '') !== senyuu && String(p['専有部3'] || '') !== senyuu) return false;
+      if (bunrui && String(p['分類'] || '') !== bunrui) return false;
+      return true;
+    });
+
+    var total = filtered.length;
+    if (total > MAX_FILTERED) {
+      filtered = filtered.slice(0, MAX_FILTERED);
+    }
+    var pageResults = filtered.slice(offset, offset + limit);
+
+    auditLog('search_bukken_ok', body.userEmail || '', 'q=' + q.slice(0, 30) + ' total=' + total + ' limit=' + limit);
+
+    return { status: 'ok', total: total, returned: pageResults.length, results: pageResults };
+  } catch(err) {
+    auditLog('search_bukken_error', body.userEmail || '', 'err=' + String(err && err.message).slice(0, 100));
+    return { status: 'error', message: 'サーバーエラー' };
+  }
+}
+
+// 物件マスタの全件取得（CacheService で 5 分キャッシュ）
+//   キャッシュサイズ上限 100KB のため、6,686 件 × 30 列 ≒ 5MB は CacheService に入らない
+//   → 単純な「シート読込→オブジェクト配列化」で実装。スプシ読込は ~1-2 秒、許容範囲
+function __loadBukkenMaster_() {
+  try {
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sh = ss.getSheetByName(BUKKEN_SHEET_NAME);
+    if (!sh) return [];
+    var lastRow = sh.getLastRow();
+    var lastCol = sh.getLastColumn();
+    if (lastRow < 2) return [];
+    var values = sh.getRange(1, 1, lastRow, lastCol).getValues();
+    var headers = values[0];
+    var rows = [];
+    for (var i = 1; i < values.length; i++) {
+      var obj = {};
+      for (var j = 0; j < headers.length; j++) {
+        obj[String(headers[j])] = values[i][j];
+      }
+      rows.push(obj);
+    }
+    return rows;
+  } catch(e) {
+    console.error('__loadBukkenMaster_ error:', e && e.message);
+    return [];
+  }
+}
+
+// ══════════════════════════════════════════════════
+// [v3.17 H-12] 物件マスタ初期投入セットアップ（GAS エディタから手動実行）
+//
+//  使い方:
+//    1) スプレッドシートで「ファイル → インポート」→ clavis_all_properties_6686.csv をアップロード
+//    2) インポートオプション: 「新しいシートを挿入」、シート名「物件マスタ全件」、区切り文字: 自動
+//    3) インポート完了後、本関数 setup_verifyBukkenMaster() を実行して件数確認
+//    4) 動作確認: setup_testSearchBukken() でクエリ動作テスト
+// ══════════════════════════════════════════════════
+function setup_verifyBukkenMaster() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName(BUKKEN_SHEET_NAME);
+  if (!sh) {
+    Logger.log('❌ シート「' + BUKKEN_SHEET_NAME + '」が見つかりません。CSV インポートを先に実施してください。');
+    return;
+  }
+  var lastRow = sh.getLastRow();
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  Logger.log('✓ シート「' + BUKKEN_SHEET_NAME + '」存在');
+  Logger.log('  行数（ヘッダ含む）: ' + lastRow);
+  Logger.log('  データ件数: ' + (lastRow - 1));
+  Logger.log('  列数: ' + headers.length);
+  Logger.log('  ヘッダ: ' + headers.join(', '));
+  // 必須列チェック
+  var required = ['buken_id', '物件名', '住所', '分類', '住戸数', '竣工年', '共用部1', '専有部1'];
+  var missing = required.filter(function(r) { return headers.indexOf(r) < 0; });
+  if (missing.length > 0) {
+    Logger.log('⚠️ 必須列が不足: ' + missing.join(', '));
+  } else {
+    Logger.log('✓ 必須列すべて存在');
+  }
+}
+
+function setup_testSearchBukken() {
+  // 認証フリーで内部呼び出しテスト（auth は body 経由のため）
+  var result = searchBukken_({ q: '荻窪', limit: 5 });
+  Logger.log(JSON.stringify(result, null, 2));
 }
 
 // ══════════════════════════════════════════════
