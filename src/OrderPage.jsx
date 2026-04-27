@@ -1,5 +1,9 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { fetchProperty, submitOrder } from './orderData'
+
+// [v3.17 H-11 (2026-04-27 JST)] Cloudflare Turnstile site key
+//   既存受注管理用 site key と同じ（同一 GitHub Pages ホスト名で発行済みのため流用可能）
+const TURNSTILE_SITE_KEY = '0x4AAAAAAC_zKnJzYy1I9AXI'
 
 // ── 商品定義（価格は物件マスターから上書き） ──────────────────
 const KEY_ITEMS = [
@@ -29,6 +33,73 @@ export default function OrderPage() {
   const [cart,       setCart]       = useState(initCart())  // { itemId: qty }
   const [form,       setForm]       = useState({ name: '', room: '', phone: '', note: '' })
   const [submitting, setSubmitting] = useState(false)
+
+  // [v3.17 H-11] Turnstile invisible widget の管理
+  //   step 3 (依頼者情報入力画面) に到達した時に widget を render
+  //   送信時に widget.execute() で token 取得
+  const turnstileContainerRef = useRef(null)
+  const turnstileWidgetIdRef  = useRef(null)
+
+  useEffect(() => {
+    if (step !== 3) return
+    // turnstile script ロード待機
+    const renderWidget = () => {
+      if (!window.turnstile) {
+        setTimeout(renderWidget, 200)
+        return
+      }
+      if (!turnstileContainerRef.current) return
+      if (turnstileWidgetIdRef.current) return  // 既に render 済み
+      try {
+        turnstileWidgetIdRef.current = window.turnstile.render(turnstileContainerRef.current, {
+          sitekey: TURNSTILE_SITE_KEY,
+          size: 'invisible',
+          // execute() で明示的に token を取得するため callback は使わない
+        })
+      } catch (e) {
+        console.error('[turnstile] render failed:', e)
+      }
+    }
+    renderWidget()
+    // step 3 から離れる時に widget を破棄
+    return () => {
+      if (turnstileWidgetIdRef.current && window.turnstile) {
+        try { window.turnstile.remove(turnstileWidgetIdRef.current) } catch(_) {}
+        turnstileWidgetIdRef.current = null
+      }
+    }
+  }, [step])
+
+  // Turnstile token を取得（invisible モードでは execute → getResponse のフロー）
+  async function getTurnstileToken() {
+    if (!window.turnstile) throw new Error('セキュリティ検証システムの読み込みに失敗しました。ページを再読み込みしてください。')
+    if (!turnstileWidgetIdRef.current) throw new Error('セキュリティ検証の準備が完了していません。')
+    return new Promise((resolve, reject) => {
+      const widgetId = turnstileWidgetIdRef.current
+      // 既存 token があればクリア（古いキャッシュを使わないため）
+      try { window.turnstile.reset(widgetId) } catch(_) {}
+      // タイムアウト 30 秒
+      const timeoutId = setTimeout(() => {
+        reject(new Error('セキュリティ検証がタイムアウトしました。'))
+      }, 30000)
+      // execute して token を取得
+      try {
+        window.turnstile.execute(widgetId, {
+          callback: (token) => {
+            clearTimeout(timeoutId)
+            resolve(token)
+          },
+          'error-callback': (err) => {
+            clearTimeout(timeoutId)
+            reject(new Error('セキュリティ検証に失敗しました: ' + (err || '不明なエラー')))
+          },
+        })
+      } catch (e) {
+        clearTimeout(timeoutId)
+        reject(e)
+      }
+    })
+  }
 
   // ── PASS照合 ──────────────────────────────────────
   async function handlePassSubmit(e) {
@@ -97,6 +168,8 @@ export default function OrderPage() {
       if (qty > 0) items.push({ name: item.name, qty, price: getPrice(item.priceKey) })
     })
     try {
+      // [v3.17 H-11] 送信前に Turnstile token を取得
+      const turnstileToken = await getTurnstileToken()
       await submitOrder({
         status:   'inquiry',
         maker:    'シブタニ',
@@ -110,7 +183,7 @@ export default function OrderPage() {
         note:     form.note,
         passCode: passInput.trim(),
         createdAt: new Date().toISOString(),
-      })
+      }, turnstileToken)
       setStep(4)
     } catch (err) {
       setError(err.message)
@@ -288,6 +361,8 @@ export default function OrderPage() {
             </div>
 
             {error && <p className="clh-error">{error}</p>}
+            {/* [v3.17 H-11] Turnstile invisible widget の描画先 — UI には表示されない */}
+            <div ref={turnstileContainerRef} style={{ display: 'none' }} />
             <button className="clh-btn" type="submit" disabled={submitting}>
               {submitting ? '送信中...' : '注文を送信する'}
             </button>

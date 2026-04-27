@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- No.47是正(2026-04-16): GitHub Pages向けCSP（ヘッダ設定不可のためmetaで代替） -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://carlockhomes-mdknk427-support0556.github.io; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://carlockhomes-mdknk427-support0556.github.io https://raw.githack.com https://raw.githubusercontent.com; connect-src 'self' https://web-order.clh-0556-clh.workers.dev https://script.google.com https://script.googleusercontent.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests;">
+    <!-- [v3.17 H-11 (2026-04-27 JST)] Cloudflare Turnstile 対応:
+         script-src に challenges.cloudflare.com / frame-src に challenges.cloudflare.com を追加
+         Turnstile widget は iframe 内で動作するため frame-src 必須 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://carlockhomes-mdknk427-support0556.github.io; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://carlockhomes-mdknk427-support0556.github.io https://raw.githack.com https://raw.githubusercontent.com; connect-src 'self' https://web-order.clh-0556-clh.workers.dev https://script.google.com https://script.googleusercontent.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests;">
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
     <title>CLH 合鍵注文 | カーロックホームズ</title>
@@ -14,6 +17,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="CLH合鍵注文" />
     <link rel="apple-touch-icon" href="/shibuutani.clavis.order/apple-touch-icon.png" />
+    <!-- [v3.17 H-11] Cloudflare Turnstile (Invisible mode) — BOT 大量注文防止 -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
   </head>
   <body>
     <div id="root"></div>
