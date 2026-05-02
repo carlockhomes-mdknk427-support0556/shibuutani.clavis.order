@@ -72,8 +72,10 @@ export default function OrderPage() {
 
   // Turnstile token を取得（invisible モードでは execute → getResponse のフロー）
   async function getTurnstileToken() {
-    if (!window.turnstile) throw new Error('セキュリティ検証システムの読み込みに失敗しました。ページを再読み込みしてください。')
-    if (!turnstileWidgetIdRef.current) throw new Error('セキュリティ検証の準備が完了していません。')
+    // 2026-05-03 C-M4 hotfix: 企業ファイアウォール等で window.turnstile が読み込めないケースに、
+    //   電話注文への誘導メッセージを含めて UX を救済（注文経路完全遮断を防止）
+    if (!window.turnstile) throw new Error('セキュリティ検証システムが利用できません。ネットワーク環境を確認の上、ページを再読込してください。なお、お急ぎの場合はお電話（カーロックホームズ 0556 連絡）でもご注文を承ります。')
+    if (!turnstileWidgetIdRef.current) throw new Error('セキュリティ検証の準備が完了していません。少し時間をおいて再試行してください。')
     return new Promise((resolve, reject) => {
       const widgetId = turnstileWidgetIdRef.current
       // 既存 token があればクリア（古いキャッシュを使わないため）
