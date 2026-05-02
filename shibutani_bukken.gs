@@ -118,25 +118,32 @@ function verifyWorkerHmac_(action, id, timestamp, providedHmac) {
 //   GAS 側は補助的な失敗回数トラッキングのみ。
 // ────────────────────────────────────────────────────
 var PASS_FAIL_CACHE_PREFIX = 'pass_fail_';
-var PASS_FAIL_MAX = 30;                 // 1 時間 30 回まで
+var PASS_FAIL_IP_CACHE_PREFIX = 'pass_fail_ip_';
+var PASS_FAIL_MAX = 30;                 // 1 時間 30 回まで（pass-key 単位）
+var PASS_FAIL_IP_MAX = 50;              // 1 時間 50 回まで（IP 単位、2026-05-03 hotfix）
 var PASS_FAIL_WINDOW_SEC = 60 * 60;     // 1 時間
-function checkPassBruteforce_(passKey) {
+function checkPassBruteforce_(passKey, clientIp) {
   try {
     var cache = CacheService.getScriptCache();
     var cacheKey = PASS_FAIL_CACHE_PREFIX + sha256_gas(String(passKey)).slice(0, 16);
+    var ipKey = clientIp ? (PASS_FAIL_IP_CACHE_PREFIX + sha256_gas(String(clientIp)).slice(0, 16)) : null;
     var cur = parseInt(cache.get(cacheKey) || '0', 10) || 0;
-    if (cur >= PASS_FAIL_MAX) return { blocked: true, count: cur };
-    return { blocked: false, count: cur, cacheKey: cacheKey };
+    var ipCur = ipKey ? (parseInt(cache.get(ipKey) || '0', 10) || 0) : 0;
+    // 2026-05-03 hotfix: pass-key 単位の制限のみだと違う pass を試行することで実質無制限。IP 単位の上限を追加
+    if (cur >= PASS_FAIL_MAX || ipCur >= PASS_FAIL_IP_MAX) {
+      return { blocked: true, count: cur, ipCount: ipCur };
+    }
+    return { blocked: false, count: cur, ipCount: ipCur, cacheKey: cacheKey, ipCacheKey: ipKey };
   } catch(_) {
     return { blocked: false, count: 0 };
   }
 }
 function recordPassFailure_(state) {
   try {
-    if (!state || !state.cacheKey) return;
+    if (!state) return;
     var cache = CacheService.getScriptCache();
-    var next = (state.count || 0) + 1;
-    cache.put(state.cacheKey, String(next), PASS_FAIL_WINDOW_SEC);
+    if (state.cacheKey) cache.put(state.cacheKey, String((state.count || 0) + 1), PASS_FAIL_WINDOW_SEC);
+    if (state.ipCacheKey) cache.put(state.ipCacheKey, String((state.ipCount || 0) + 1), PASS_FAIL_WINDOW_SEC);
   } catch(_) {}
 }
 
@@ -394,7 +401,9 @@ function doGet(e) {
   }
 
   // ブルートフォース対策（PASS 試行回数）
-  var bruteState = checkPassBruteforce_(pass);
+  // 2026-05-03 hotfix: IP 単位カウンタも併用（worker 経由で渡される clientIp ヘッダ or fp）
+  var clientIp = (e && e.parameter && (e.parameter.clientIp || e.parameter.fp)) || '';
+  var bruteState = checkPassBruteforce_(pass, clientIp);
   if (bruteState.blocked) {
     auditLog('get_property_rate_limit', 'public', 'pass_hash=' + sha256_gas(pass).slice(0, 8));
     return jsonResponse({ status: 'error', message: 'リクエストが多すぎます。しばらく待ってから再試行してください。' });
@@ -551,12 +560,42 @@ function searchBukken_(body) {
         if (hay.indexOf(q) < 0) return false;
       }
       if (mansion && String(p['物件名'] || '').toLowerCase().indexOf(mansion) < 0) return false;
-      if (year && String(p['竣工年'] || '').indexOf(year) < 0) return false;
+      // 2026-05-03 hotfix: year は 'YYYY-YYYY' のレンジ文字列。indexOf では一致しないバグ修正
+      if (year) {
+        var yp = String(p['竣工年'] || '').match(/(\d{4})/);
+        var yn = yp ? Number(yp[1]) : NaN;
+        if (year.indexOf('-') !== -1) {
+          var yr = year.split('-');
+          var yFrom = Number(yr[0]);
+          var yTo   = Number(yr[1]);
+          if (!isFinite(yn) || yn < yFrom || yn > yTo) return false;
+        } else if (String(p['竣工年'] || '').indexOf(year) < 0) {
+          return false;
+        }
+      }
       if (kyouyou && String(p['共用部1'] || '') !== kyouyou && String(p['共用部2'] || '') !== kyouyou) return false;
       if (senyuu && String(p['専有部1'] || '') !== senyuu && String(p['専有部2'] || '') !== senyuu && String(p['専有部3'] || '') !== senyuu) return false;
       if (bunrui && String(p['分類'] || '') !== bunrui) return false;
       return true;
     });
+
+    // 2026-05-03 hotfix: sort パラメータをサーバー側で処理（フロントが送信していたが GAS は無視していた）
+    var sortKey = String(body.sort || '').trim();
+    if (sortKey) {
+      var _cmp = function(a, b, key, asc) {
+        var av = a[key] || '', bv = b[key] || '';
+        if (typeof av === 'number' && typeof bv === 'number') return asc ? av - bv : bv - av;
+        return asc ? String(av).localeCompare(String(bv), 'ja') : String(bv).localeCompare(String(av), 'ja');
+      };
+      switch (sortKey) {
+        case 'id_desc':    filtered.sort(function(a,b){ return _cmp(a,b,'物件id', false); }); break;
+        case 'id_asc':     filtered.sort(function(a,b){ return _cmp(a,b,'物件id', true);  }); break;
+        case 'name_asc':   filtered.sort(function(a,b){ return _cmp(a,b,'物件名', true);  }); break;
+        case 'units_desc': filtered.sort(function(a,b){ return _cmp(a,b,'戸数',   false); }); break;
+        case 'year_desc':  filtered.sort(function(a,b){ return _cmp(a,b,'竣工年', false); }); break;
+        case 'year_asc':   filtered.sort(function(a,b){ return _cmp(a,b,'竣工年', true);  }); break;
+      }
+    }
 
     var total = filtered.length;
     if (total > MAX_FILTERED) {

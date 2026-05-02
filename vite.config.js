@@ -45,7 +45,8 @@ export default defineConfig({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'gas-api-cache',
-              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 },
+              // 2026-05-03 hotfix: 24h は価格データ更新の反映遅延が大きすぎる → 5 分に短縮
+              expiration: { maxEntries: 10, maxAgeSeconds: 5 * 60 },
               networkTimeoutSeconds: 10,
             },
           },
@@ -54,7 +55,8 @@ export default defineConfig({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'worker-api-cache',
-              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 },
+              // 2026-05-03 hotfix: 24h は価格データ更新の反映遅延が大きすぎる → 5 分に短縮
+              expiration: { maxEntries: 10, maxAgeSeconds: 5 * 60 },
               networkTimeoutSeconds: 10,
             },
           },
